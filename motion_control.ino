@@ -21,14 +21,8 @@
 #include <ros.h>
 #include <std_msgs/Float64.h>
 
-//kalman filter caochao
-#define KALMAN_CC_FILTER
-#ifdef KALMAN_CC_FILTER
-#include <kalman_filter.h>
-#endif
 
-
-//#define USE_LOWPASS_FILTER 0
+//#define USE_LOWPASS_FILTER
 
 #ifdef USE_LOWPASS_FILTER
 #include <Filters.h>
@@ -37,10 +31,10 @@
 #define RESTRICT_PITCH // Comment out to restrict roll to ±90deg instead - please read: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf
 
 #define INFINITE (unsigned long)1000000
-#define P 1.5f
-#define D 0.7f
-#define V_upper_limit 200.0f
-#define ACC_upper_limit 5000000.0f
+#define P 6.f
+#define D 1.5f
+#define V_upper_limit 300.0f
+#define ACC_upper_limit 40000.0f
 
 const int array_size = 1;
 double sum_kalAngleX, sum_kalAngleY;
@@ -129,8 +123,10 @@ float kd_roll = D;
 
 float error_pitch = 0.0;
 float pre_error_pitch = 0.0;
+float pre_pre_error_pitch = 0.0;
 float error_roll = 0.0;
 float pre_error_roll = 0.0;
+float pre_pre_error_roll = 0.0;
 
 float dt = 0.002;
 
@@ -154,66 +150,21 @@ float filterFrequency = 1.5;
 FilterOnePole lowpassFilter_roll(LOWPASS, filterFrequency);
 FilterOnePole lowpassFilter_pitch(LOWPASS, filterFrequency);
 
-float filter_acc_roll;
-float filter_acc_pitch;
+float filter_imu_roll;
+float filter_imu_pitch;
 
-std_msgs::Float64 filter_acc_pitch_msg;
-std_msgs::Float64 filter_acc_roll_msg;
-ros::Publisher filter_acc_pitch_pub("filter_acc_pitch", &filter_acc_pitch_msg);
-ros::Publisher filter_acc_roll_pub("filter_acc_roll", &filter_acc_roll_msg);
+std_msgs::Float64 filter_imu_pitch_msg;
+std_msgs::Float64 filter_imu_roll_msg;
+ros::Publisher filter_imu_pitch_pub("filter_imu_pitch", &filter_imu_pitch_msg);
+ros::Publisher filter_imu_roll_pub("filter_imu_roll", &filter_imu_roll_msg);
 #endif
 
-#ifdef KALMAN_CC_FILTER
-float kf_P = 1;
-float kf_Q = 0.7;//bigger tighter
-float kf_R = 1;//smaller tighter
-
-float kf_acc_roll = 0;
-float kf_acc_pitch = 0;
-float kf_gyro_x_val = 0;
-float kf_gyro_y_val = 0;
-
-float kf_acc_x_val = 0;
-float kf_acc_y_val = 0;
-float kf_acc_z_val = 0;
-
-float original_accX = 0;
-float original_accY = 0;
-float original_accZ = 0;
-
-KalmanFilter *kf_roll;
-KalmanFilter *kf_pitch;
-
-KalmanFilter *kf_gyro_x;
-KalmanFilter *kf_gyro_y;
-
-KalmanFilter *kf_acc_x;
-KalmanFilter *kf_acc_y;
-KalmanFilter *kf_acc_z;
-
-
-std_msgs::Float64 kf_acc_pitch_msg;
-std_msgs::Float64 kf_acc_roll_msg;
-ros::Publisher kf_acc_pitch_pub("kf_acc_pitch", &kf_acc_pitch_msg);
-ros::Publisher kf_acc_roll_pub("kf_acc_roll", &kf_acc_roll_msg);
-
-std_msgs::Float64 kf_gyro_x_msg;
-std_msgs::Float64 kf_gyro_y_msg;
-ros::Publisher kf_gyro_x_pub("kf_gyro_x", &kf_gyro_x_msg);
-ros::Publisher kf_gyro_y_pub("kf_gyro_y", &kf_gyro_y_msg);
-
-std_msgs::Float64 kf_acc_x_msg;
-std_msgs::Float64 kf_acc_y_msg;
-std_msgs::Float64 kf_acc_z_msg;
-ros::Publisher kf_acc_x_pub("kf_acc_x", &kf_acc_x_msg);
-ros::Publisher kf_acc_y_pub("kf_acc_y", &kf_acc_y_msg);
-ros::Publisher kf_acc_z_pub("kf_acc_z", &kf_acc_z_msg);
-#endif
 
 float pid_pitch(float pv)
 {
     error_pitch = setpoint_pitch - pv;
-    pid_output = kp_pitch * error_pitch + kd_pitch * (error_pitch - pre_error_pitch) / dt;
+    pid_output = kp_pitch * error_pitch + kd_pitch * (error_pitch*2/3 - pre_error_pitch + pre_pre_error_pitch/3) / dt;
+    pre_pre_error_pitch = pre_error_pitch;
     pre_error_pitch = error_pitch;
     if (fabs(pid_output) > ACC_upper_limit)
     {
@@ -225,7 +176,8 @@ float pid_pitch(float pv)
 float pid_roll(float pv)
 {
     error_roll = setpoint_roll - pv;
-    pid_output = kp_roll * error_roll + kd_roll * (error_roll - pre_error_roll) / dt;
+    pid_output = kp_roll * error_roll + kd_roll * (error_roll*2/3 - pre_error_roll + pre_pre_error_roll/3) / dt;
+    pre_pre_error_roll = pre_error_roll;
     pre_error_roll = error_roll;
     if (fabs(pid_output) > ACC_upper_limit)
     {
@@ -410,42 +362,11 @@ void setup() {
   nh.advertise(acc_z_pub);
   
 #ifdef USE_LOWPASS_FILTER
-  nh.advertise(filter_acc_pitch_pub);
-  nh.advertise(filter_acc_roll_pub);
+  nh.advertise(filter_imu_pitch_pub);
+  nh.advertise(filter_imu_roll_pub);
 #endif
 
-#ifdef KALMAN_CC_FILTER
-kf_roll = new KalmanFilter(kf_P, kf_Q, kf_R);
-kf_pitch = new KalmanFilter(kf_P, kf_Q, kf_R);
 
-kf_gyro_x = new KalmanFilter(kf_P, kf_Q, kf_R);
-kf_gyro_y = new KalmanFilter(kf_P, kf_Q, kf_R);
-
-//kf_Q = 0.7 kf_R = 1
-kf_acc_x = new KalmanFilter(kf_P, 0.7, 1);
-kf_acc_y = new KalmanFilter(kf_P, 0.7, 1);
-kf_acc_z = new KalmanFilter(kf_P, 0.7, 1);
-
-kf_roll->init();
-kf_pitch->init();
-
-kf_gyro_x->init();
-kf_gyro_y->init();
-
-kf_acc_x->init();
-kf_acc_y->init();
-kf_acc_z->init();
-
-nh.advertise(kf_acc_pitch_pub);
-nh.advertise(kf_acc_roll_pub);
-
-nh.advertise(kf_gyro_x_pub);
-nh.advertise(kf_gyro_y_pub);
-
-nh.advertise(kf_acc_x_pub);
-nh.advertise(kf_acc_y_pub);
-nh.advertise(kf_acc_z_pub);
-#endif
   
   //initialize motors
   pinMode(30, OUTPUT);
@@ -469,7 +390,7 @@ nh.advertise(kf_acc_z_pub);
   TIMSK1 |= (1<<OCIE1A); // enable timer compare interrupt
   interrupts(); // enable all interrupts
 //  setMotorSpeed(0, 100);
-//  setMotorSpeed(1, -500);
+//  setMotorSpeed(1, 0.00001);
 
   for (int i = 0; i < array_size; i++)
   {
@@ -492,34 +413,8 @@ void loop() {
   double dt = (double)(micros() - timer) / 1000000; // Calculate delta time
   timer = micros();
 
-#ifdef KALMAN_CC_FILTER
-  kf_gyro_x->update(gyroX);
-  kf_gyro_y->update(gyroY);
-  kf_gyro_x_val = kf_gyro_x->state();
-  kf_gyro_y_val = kf_gyro_y->state();
-  
-  kf_acc_x->update(accX);
-  kf_acc_y->update(accY);
-  kf_acc_z->update(accZ);
-  kf_acc_x_val = kf_acc_x->state();
-  kf_acc_y_val = kf_acc_y->state();
-  kf_acc_z_val = kf_acc_z->state();
-  
-  original_accX = accX;
-  original_accY = accY;
-  original_accZ = accZ;
-  
-  accX = kf_acc_x_val;
-  accY = kf_acc_y_val;
-  accZ = kf_acc_z_val;
-  
-  
-  double gyroXrate = kf_gyro_x_val / 131.0; // Convert to deg/s
-  double gyroYrate = kf_gyro_y_val / 131.0; // Convert to deg/s
-#else
   double gyroXrate = gyroX / 131.0; // Convert to deg/s
   double gyroYrate = gyroY / 131.0; // Convert to deg/s
-#endif
 
   // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
   // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
@@ -623,30 +518,31 @@ void loop() {
   sum += deltat;
   sumCount++;
   
-  sum_kalAngleX = 0;
-  sum_kalAngleY = 0;
-  for (int i = 0; i < array_size-1; i++)
-  {
-    sum_kalAngleX += pre_kalAngleX[i];
-    pre_kalAngleX[i] = pre_kalAngleX[i+1];
-    sum_kalAngleY += pre_kalAngleY[i];
-    pre_kalAngleY[i] = pre_kalAngleY[i+1];
-  }
+  #ifdef USE_LOWPASS_FILTER
+  lowpassFilter_roll.input(kalAngleX);
+  filter_imu_roll = lowpassFilter_roll.output();
   
-  sum_kalAngleX += kalAngleX;
-  pre_kalAngleX[array_size-1] = kalAngleX;
-  sum_kalAngleY += kalAngleY;
-  pre_kalAngleY[array_size-1] = kalAngleY;
+  lowpassFilter_pitch.input(kalAngleY);
+  filter_imu_pitch = lowpassFilter_pitch.output();
   
-  acc_pitch = pid_pitch(sum_kalAngleY/array_size * 180/M_PI);
-  acc_roll = pid_roll(sum_kalAngleX/array_size * 180/M_PI);
+  filter_imu_roll_msg.data = filter_imu_roll;
+  filter_imu_roll_pub.publish(&filter_imu_roll_msg);
   
+  filter_imu_pitch_msg.data = filter_imu_pitch;
+  filter_imu_pitch_pub.publish(&filter_imu_pitch_msg);
   
+  acc_pitch = pid_pitch(filter_imu_pitch * 180 / M_PI);
+  acc_roll = pid_roll(filter_imu_roll * 180 / M_PI);
+#else
+  acc_pitch = pid_pitch(kalAngleY * 180 / M_PI);
+  acc_roll = pid_roll(kalAngleX * 180 / M_PI);
+#endif
   
-//  imu_pitch_msg.data = kalAngleY;
-//  imu_roll_msg.data = kalAngleX;
-  imu_pitch_msg.data = sum_kalAngleY/array_size;
-  imu_roll_msg.data = sum_kalAngleX/array_size;
+  set_delay_pitch(acc_pitch);
+  set_delay_roll(acc_roll);
+
+  imu_pitch_msg.data = kalAngleY;
+  imu_roll_msg.data = kalAngleX;
   imu_pitch_pub.publish(&imu_pitch_msg);
   imu_roll_pub.publish(&imu_roll_msg);
   
@@ -660,65 +556,8 @@ void loop() {
   gyro_pitch_pub.publish(&gyro_pitch_msg);
   gyro_roll_pub.publish(&gyro_roll_msg);
   
-  
-  
-#ifdef USE_LOWPASS_FILTER
-  lowpassFilter_roll.input(acc_roll);
-  filter_acc_roll = lowpassFilter_roll.output();
-  
-  lowpassFilter_pitch.input(acc_pitch);
-  filter_acc_pitch = lowpassFilter_pitch.output();
-  
-  filter_acc_roll_msg.data = filter_acc_roll/100;
-  filter_acc_roll_pub.publish(&filter_acc_roll_msg);
-  
-  filter_acc_pitch_msg.data = filter_acc_pitch/100;
-  filter_acc_pitch_pub.publish(&filter_acc_pitch_msg);
-  
-  set_delay_pitch(filter_acc_pitch);
-  set_delay_roll(filter_acc_roll);
-#else
-  set_delay_pitch(acc_pitch);
-  set_delay_roll(acc_roll);
-#endif
 
-#ifdef KALMAN_CC_FILTER
-  kf_roll->update(acc_roll);
-  kf_pitch->update(acc_pitch);
-  kf_acc_roll = kf_roll->state();
-  kf_acc_pitch = kf_pitch->state();
-  
-  kf_acc_roll_msg.data = kf_acc_roll/100;
-  kf_acc_roll_pub.publish(&kf_acc_roll_msg);
-  
-  kf_acc_pitch_msg.data = kf_acc_pitch/100;
-  kf_acc_pitch_pub.publish(&kf_acc_pitch_msg);
-  
-  kf_gyro_x_msg.data = kf_gyro_x_val;
-  kf_gyro_x_pub.publish(&kf_gyro_x_msg);
-  
-  kf_gyro_y_msg.data = kf_gyro_y_val;
-  kf_gyro_y_pub.publish(&kf_gyro_y_msg);
-  
-  kf_acc_x_msg.data = kf_acc_x_val;
-  kf_acc_x_pub.publish(&kf_acc_x_msg);
-  
-  kf_acc_y_msg.data = kf_acc_y_val;
-  kf_acc_y_pub.publish(&kf_acc_y_msg);
-  
-  kf_acc_z_msg.data = kf_acc_z_val;
-  kf_acc_z_pub.publish(&kf_acc_z_msg);
-  
-  acc_x_msg.data = original_accX;
-  acc_x_pub.publish(&acc_x_msg);
-  
-  acc_y_msg.data = original_accY;
-  acc_y_pub.publish(&acc_y_msg);
-  
-  acc_z_msg.data = original_accZ;
-  acc_z_pub.publish(&acc_z_msg);
-  
-#else
+
 
   acc_x_msg.data = accX;
   acc_x_pub.publish(&acc_x_msg);
@@ -729,12 +568,7 @@ void loop() {
   acc_z_msg.data = accZ;
   acc_z_pub.publish(&acc_z_msg);
   
-#endif
   
   
   nh.spinOnce();
-  
-  
-//  Serial.println(period_m[0]);
-//  Serial.println(period_m[1]);
 }
