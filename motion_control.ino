@@ -21,12 +21,26 @@
 #include <ros.h>
 #include <std_msgs/Float64.h>
 
+//kalman filter caochao
+#define KALMAN_CC_FILTER
+#ifdef KALMAN_CC_FILTER
+#include <kalman_filter.h>
+#endif
+
+
+//#define USE_LOWPASS_FILTER 0
+
+#ifdef USE_LOWPASS_FILTER
+#include <Filters.h>
+#endif
+
 #define RESTRICT_PITCH // Comment out to restrict roll to ±90deg instead - please read: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf
 
 #define INFINITE (unsigned long)1000000
-#define P 1.0f
-#define D 0.3f
-#define V_upper_limit 250.0f
+#define P 1.5f
+#define D 0.7f
+#define V_upper_limit 200.0f
+#define ACC_upper_limit 5000000.0f
 
 const int array_size = 1;
 double sum_kalAngleX, sum_kalAngleY;
@@ -74,6 +88,13 @@ std_msgs::Float64 gyro_pitch_msg;
 std_msgs::Float64 gyro_roll_msg;
 ros::Publisher gyro_pitch_pub("gyro_pitch", &gyro_pitch_msg);
 ros::Publisher gyro_roll_pub("gyro_roll", &gyro_roll_msg);
+
+std_msgs::Float64 acc_x_msg;
+std_msgs::Float64 acc_y_msg;
+std_msgs::Float64 acc_z_msg;
+ros::Publisher acc_x_pub("acc_x", &acc_x_msg);
+ros::Publisher acc_y_pub("acc_y", &acc_y_msg);
+ros::Publisher acc_z_pub("acc_z", &acc_z_msg);
 
 //stepper motor stuff
 uint16_t counter_m[2];
@@ -123,11 +144,81 @@ float acc_roll = 0.0;
 float setpoint_pitch = 0.0;
 float setpoint_roll = 0.0;
 
+
+//lowpass filter stuff
+#ifdef USE_LOWPASS_FILTER
+//filters out changes faster than 10hz
+float filterFrequency = 1.5;
+
+//create a one pole (RC) lowpass filter
+FilterOnePole lowpassFilter_roll(LOWPASS, filterFrequency);
+FilterOnePole lowpassFilter_pitch(LOWPASS, filterFrequency);
+
+float filter_acc_roll;
+float filter_acc_pitch;
+
+std_msgs::Float64 filter_acc_pitch_msg;
+std_msgs::Float64 filter_acc_roll_msg;
+ros::Publisher filter_acc_pitch_pub("filter_acc_pitch", &filter_acc_pitch_msg);
+ros::Publisher filter_acc_roll_pub("filter_acc_roll", &filter_acc_roll_msg);
+#endif
+
+#ifdef KALMAN_CC_FILTER
+float kf_P = 1;
+float kf_Q = 0.7;//bigger tighter
+float kf_R = 1;//smaller tighter
+
+float kf_acc_roll = 0;
+float kf_acc_pitch = 0;
+float kf_gyro_x_val = 0;
+float kf_gyro_y_val = 0;
+
+float kf_acc_x_val = 0;
+float kf_acc_y_val = 0;
+float kf_acc_z_val = 0;
+
+float original_accX = 0;
+float original_accY = 0;
+float original_accZ = 0;
+
+KalmanFilter *kf_roll;
+KalmanFilter *kf_pitch;
+
+KalmanFilter *kf_gyro_x;
+KalmanFilter *kf_gyro_y;
+
+KalmanFilter *kf_acc_x;
+KalmanFilter *kf_acc_y;
+KalmanFilter *kf_acc_z;
+
+
+std_msgs::Float64 kf_acc_pitch_msg;
+std_msgs::Float64 kf_acc_roll_msg;
+ros::Publisher kf_acc_pitch_pub("kf_acc_pitch", &kf_acc_pitch_msg);
+ros::Publisher kf_acc_roll_pub("kf_acc_roll", &kf_acc_roll_msg);
+
+std_msgs::Float64 kf_gyro_x_msg;
+std_msgs::Float64 kf_gyro_y_msg;
+ros::Publisher kf_gyro_x_pub("kf_gyro_x", &kf_gyro_x_msg);
+ros::Publisher kf_gyro_y_pub("kf_gyro_y", &kf_gyro_y_msg);
+
+std_msgs::Float64 kf_acc_x_msg;
+std_msgs::Float64 kf_acc_y_msg;
+std_msgs::Float64 kf_acc_z_msg;
+ros::Publisher kf_acc_x_pub("kf_acc_x", &kf_acc_x_msg);
+ros::Publisher kf_acc_y_pub("kf_acc_y", &kf_acc_y_msg);
+ros::Publisher kf_acc_z_pub("kf_acc_z", &kf_acc_z_msg);
+#endif
+
 float pid_pitch(float pv)
 {
     error_pitch = setpoint_pitch - pv;
     pid_output = kp_pitch * error_pitch + kd_pitch * (error_pitch - pre_error_pitch) / dt;
     pre_error_pitch = error_pitch;
+    if (fabs(pid_output) > ACC_upper_limit)
+    {
+      pid_output = pid_output > 0 ? ACC_upper_limit : -ACC_upper_limit;
+    }
     return pid_output;
 }
 
@@ -136,6 +227,10 @@ float pid_roll(float pv)
     error_roll = setpoint_roll - pv;
     pid_output = kp_roll * error_roll + kd_roll * (error_roll - pre_error_roll) / dt;
     pre_error_roll = error_roll;
+    if (fabs(pid_output) > ACC_upper_limit)
+    {
+      pid_output = pid_output > 0 ? ACC_upper_limit : -ACC_upper_limit;
+    }
     return pid_output;
 }
 
@@ -310,6 +405,47 @@ void setup() {
   nh.advertise(acc_roll_pub);
   nh.advertise(gyro_pitch_pub);
   nh.advertise(gyro_roll_pub);
+  nh.advertise(acc_x_pub);
+  nh.advertise(acc_y_pub);
+  nh.advertise(acc_z_pub);
+  
+#ifdef USE_LOWPASS_FILTER
+  nh.advertise(filter_acc_pitch_pub);
+  nh.advertise(filter_acc_roll_pub);
+#endif
+
+#ifdef KALMAN_CC_FILTER
+kf_roll = new KalmanFilter(kf_P, kf_Q, kf_R);
+kf_pitch = new KalmanFilter(kf_P, kf_Q, kf_R);
+
+kf_gyro_x = new KalmanFilter(kf_P, kf_Q, kf_R);
+kf_gyro_y = new KalmanFilter(kf_P, kf_Q, kf_R);
+
+//kf_Q = 0.7 kf_R = 1
+kf_acc_x = new KalmanFilter(kf_P, 0.7, 1);
+kf_acc_y = new KalmanFilter(kf_P, 0.7, 1);
+kf_acc_z = new KalmanFilter(kf_P, 0.7, 1);
+
+kf_roll->init();
+kf_pitch->init();
+
+kf_gyro_x->init();
+kf_gyro_y->init();
+
+kf_acc_x->init();
+kf_acc_y->init();
+kf_acc_z->init();
+
+nh.advertise(kf_acc_pitch_pub);
+nh.advertise(kf_acc_roll_pub);
+
+nh.advertise(kf_gyro_x_pub);
+nh.advertise(kf_gyro_y_pub);
+
+nh.advertise(kf_acc_x_pub);
+nh.advertise(kf_acc_y_pub);
+nh.advertise(kf_acc_z_pub);
+#endif
   
   //initialize motors
   pinMode(30, OUTPUT);
@@ -356,6 +492,35 @@ void loop() {
   double dt = (double)(micros() - timer) / 1000000; // Calculate delta time
   timer = micros();
 
+#ifdef KALMAN_CC_FILTER
+  kf_gyro_x->update(gyroX);
+  kf_gyro_y->update(gyroY);
+  kf_gyro_x_val = kf_gyro_x->state();
+  kf_gyro_y_val = kf_gyro_y->state();
+  
+  kf_acc_x->update(accX);
+  kf_acc_y->update(accY);
+  kf_acc_z->update(accZ);
+  kf_acc_x_val = kf_acc_x->state();
+  kf_acc_y_val = kf_acc_y->state();
+  kf_acc_z_val = kf_acc_z->state();
+  
+  original_accX = accX;
+  original_accY = accY;
+  original_accZ = accZ;
+  
+  accX = kf_acc_x_val;
+  accY = kf_acc_y_val;
+  accZ = kf_acc_z_val;
+  
+  
+  double gyroXrate = kf_gyro_x_val / 131.0; // Convert to deg/s
+  double gyroYrate = kf_gyro_y_val / 131.0; // Convert to deg/s
+#else
+  double gyroXrate = gyroX / 131.0; // Convert to deg/s
+  double gyroYrate = gyroY / 131.0; // Convert to deg/s
+#endif
+
   // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
   // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
   // It is then converted from radians to degrees
@@ -367,8 +532,7 @@ void loop() {
   double pitch = atan2(-accX, accZ) * RAD_TO_DEG;
 #endif
 
-  double gyroXrate = gyroX / 131.0; // Convert to deg/s
-  double gyroYrate = gyroY / 131.0; // Convert to deg/s
+
 
 #ifdef RESTRICT_PITCH
   // This fixes the transition problem when the accelerometer angle jumps between -180 and 180 degrees
@@ -477,13 +641,12 @@ void loop() {
   acc_pitch = pid_pitch(sum_kalAngleY/array_size * 180/M_PI);
   acc_roll = pid_roll(sum_kalAngleX/array_size * 180/M_PI);
   
-  set_delay_pitch(acc_pitch);
-  set_delay_roll(acc_roll);
+  
   
 //  imu_pitch_msg.data = kalAngleY;
 //  imu_roll_msg.data = kalAngleX;
-  imu_pitch_msg.data = sum_kalAngleX/array_size;
-  imu_roll_msg.data = sum_kalAngleY/array_size;
+  imu_pitch_msg.data = sum_kalAngleY/array_size;
+  imu_roll_msg.data = sum_kalAngleX/array_size;
   imu_pitch_pub.publish(&imu_pitch_msg);
   imu_roll_pub.publish(&imu_roll_msg);
   
@@ -497,6 +660,76 @@ void loop() {
   gyro_pitch_pub.publish(&gyro_pitch_msg);
   gyro_roll_pub.publish(&gyro_roll_msg);
   
+  
+  
+#ifdef USE_LOWPASS_FILTER
+  lowpassFilter_roll.input(acc_roll);
+  filter_acc_roll = lowpassFilter_roll.output();
+  
+  lowpassFilter_pitch.input(acc_pitch);
+  filter_acc_pitch = lowpassFilter_pitch.output();
+  
+  filter_acc_roll_msg.data = filter_acc_roll/100;
+  filter_acc_roll_pub.publish(&filter_acc_roll_msg);
+  
+  filter_acc_pitch_msg.data = filter_acc_pitch/100;
+  filter_acc_pitch_pub.publish(&filter_acc_pitch_msg);
+  
+  set_delay_pitch(filter_acc_pitch);
+  set_delay_roll(filter_acc_roll);
+#else
+  set_delay_pitch(acc_pitch);
+  set_delay_roll(acc_roll);
+#endif
+
+#ifdef KALMAN_CC_FILTER
+  kf_roll->update(acc_roll);
+  kf_pitch->update(acc_pitch);
+  kf_acc_roll = kf_roll->state();
+  kf_acc_pitch = kf_pitch->state();
+  
+  kf_acc_roll_msg.data = kf_acc_roll/100;
+  kf_acc_roll_pub.publish(&kf_acc_roll_msg);
+  
+  kf_acc_pitch_msg.data = kf_acc_pitch/100;
+  kf_acc_pitch_pub.publish(&kf_acc_pitch_msg);
+  
+  kf_gyro_x_msg.data = kf_gyro_x_val;
+  kf_gyro_x_pub.publish(&kf_gyro_x_msg);
+  
+  kf_gyro_y_msg.data = kf_gyro_y_val;
+  kf_gyro_y_pub.publish(&kf_gyro_y_msg);
+  
+  kf_acc_x_msg.data = kf_acc_x_val;
+  kf_acc_x_pub.publish(&kf_acc_x_msg);
+  
+  kf_acc_y_msg.data = kf_acc_y_val;
+  kf_acc_y_pub.publish(&kf_acc_y_msg);
+  
+  kf_acc_z_msg.data = kf_acc_z_val;
+  kf_acc_z_pub.publish(&kf_acc_z_msg);
+  
+  acc_x_msg.data = original_accX;
+  acc_x_pub.publish(&acc_x_msg);
+  
+  acc_y_msg.data = original_accY;
+  acc_y_pub.publish(&acc_y_msg);
+  
+  acc_z_msg.data = original_accZ;
+  acc_z_pub.publish(&acc_z_msg);
+  
+#else
+
+  acc_x_msg.data = accX;
+  acc_x_pub.publish(&acc_x_msg);
+  
+  acc_y_msg.data = accY;
+  acc_y_pub.publish(&acc_y_msg);
+  
+  acc_z_msg.data = accZ;
+  acc_z_pub.publish(&acc_z_msg);
+  
+#endif
   
   
   nh.spinOnce();
