@@ -18,23 +18,28 @@
 #include <Wire.h>
 #include "Kalman.h" // Source: https://github.com/TKJElectronics/KalmanFilter
 
+
+#define USE_KALMAN_CC 1
+#ifdef USE_KALMAN_CC
+#include <kalman_filter.h>
+#endif
+
+#define USE_ROS
+#ifdef USE_ROS
 #include <ros.h>
 #include <std_msgs/Float64.h>
-
-
-//#define USE_LOWPASS_FILTER
-
-#ifdef USE_LOWPASS_FILTER
-#include <Filters.h>
 #endif
+
+
 
 #define RESTRICT_PITCH // Comment out to restrict roll to ±90deg instead - please read: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf
 
 #define INFINITE (unsigned long)1000000
-#define P 6.f
-#define D 1.5f
-#define V_upper_limit 300.0f
-#define ACC_upper_limit 40000.0f
+#define P 15.5f
+#define D 18.f
+#define V_upper_limit 1000.0f
+//#define ACC_upper_limit 40000.0f
+#define ACC_upper_limit 400000.0f
 
 const int array_size = 1;
 double sum_kalAngleX, sum_kalAngleY;
@@ -48,6 +53,7 @@ float sum = 0.0f;
 uint32_t count = 0;
 uint32_t sumCount = 0; 
 uint32_t delt_t = 0;
+
 
 Kalman kalmanX; // Create the Kalman instances
 Kalman kalmanY;
@@ -67,6 +73,7 @@ uint8_t i2cData[14]; // Buffer for I2C data
 // TODO: Make calibration routine
 
 //ROS stuff
+#ifdef USE_ROS
 ros::NodeHandle nh;
 std_msgs::Float64 imu_pitch_msg;
 std_msgs::Float64 imu_roll_msg;
@@ -77,18 +84,7 @@ std_msgs::Float64 acc_pitch_msg;
 std_msgs::Float64 acc_roll_msg;
 ros::Publisher acc_pitch_pub("acc_pitch", &acc_pitch_msg);
 ros::Publisher acc_roll_pub("acc_roll", &acc_roll_msg);
-
-std_msgs::Float64 gyro_pitch_msg;
-std_msgs::Float64 gyro_roll_msg;
-ros::Publisher gyro_pitch_pub("gyro_pitch", &gyro_pitch_msg);
-ros::Publisher gyro_roll_pub("gyro_roll", &gyro_roll_msg);
-
-std_msgs::Float64 acc_x_msg;
-std_msgs::Float64 acc_y_msg;
-std_msgs::Float64 acc_z_msg;
-ros::Publisher acc_x_pub("acc_x", &acc_x_msg);
-ros::Publisher acc_y_pub("acc_y", &acc_y_msg);
-ros::Publisher acc_z_pub("acc_z", &acc_z_msg);
+#endif
 
 //stepper motor stuff
 uint16_t counter_m[2];
@@ -128,7 +124,7 @@ float error_roll = 0.0;
 float pre_error_roll = 0.0;
 float pre_pre_error_roll = 0.0;
 
-float dt = 0.002;
+double dt = 0.002;
 
 float pid_output;
 
@@ -140,30 +136,67 @@ float acc_roll = 0.0;
 float setpoint_pitch = 0.0;
 float setpoint_roll = 0.0;
 
+//kalman filter cc stuff
+#ifdef USE_KALMAN_CC
+KalmanFilter * kalman_cc_pitch;
+KalmanFilter * kalman_cc_roll;
+float kalman_cc_P = 10;
+float kalman_cc_Q = 0.1;//the bigger the tighter
+float kalman_cc_R = 1;
 
-//lowpass filter stuff
-#ifdef USE_LOWPASS_FILTER
-//filters out changes faster than 10hz
-float filterFrequency = 1.5;
+float kalman_cc_pitch_value = 0.0;
+float kalman_cc_roll_value = 0.0;
 
-//create a one pole (RC) lowpass filter
-FilterOnePole lowpassFilter_roll(LOWPASS, filterFrequency);
-FilterOnePole lowpassFilter_pitch(LOWPASS, filterFrequency);
+float filtered_error_pitch = 0.0;
+float filtered_error_roll = 0.0;
 
-float filter_imu_roll;
-float filter_imu_pitch;
+float filtered_pre_error_pitch = 0.0;
+float filtered_pre_error_roll = 0.0;
 
-std_msgs::Float64 filter_imu_pitch_msg;
-std_msgs::Float64 filter_imu_roll_msg;
-ros::Publisher filter_imu_pitch_pub("filter_imu_pitch", &filter_imu_pitch_msg);
-ros::Publisher filter_imu_roll_pub("filter_imu_roll", &filter_imu_roll_msg);
+float filtered_pre_pre_error_pitch = 0.0;
+float filtered_pre_pre_error_roll = 0.0;
+#ifdef USE_ROS
+std_msgs::Float64 kalman_cc_imu_pitch_msg;
+std_msgs::Float64 kalman_cc_imu_roll_msg;
+ros::Publisher kalman_cc_imu_pitch_pub("kalman_cc_imu_pitch", &kalman_cc_imu_pitch_msg);
+ros::Publisher kalman_cc_imu_roll_pub("kalman_cc_imu_roll", &kalman_cc_imu_roll_msg);
+#endif
 #endif
 
+#ifdef USE_KALMAN_CC
+float pid_pitch(float pv, float filtered_pv)
+{
+    error_pitch = setpoint_pitch - pv;
+    filtered_error_pitch = setpoint_pitch - filtered_pv;
+    pid_output = kp_pitch * error_pitch + kd_pitch * (filtered_error_pitch - filtered_pre_pre_error_pitch) / (2 * dt);
+    filtered_pre_pre_error_pitch = filtered_pre_error_pitch;
+    filtered_pre_error_pitch = filtered_error_pitch;
+    if (fabs(pid_output) > ACC_upper_limit)
+    {
+      pid_output = pid_output > 0 ? ACC_upper_limit : -ACC_upper_limit;
+    }
+    return pid_output;
+}
+
+float pid_roll(float pv, float filtered_pv)
+{
+    error_roll = setpoint_roll - pv;
+    filtered_error_roll = setpoint_roll - filtered_pv;
+    pid_output = kp_roll * error_roll + kd_roll * (filtered_error_roll - filtered_pre_pre_error_roll) / (2 * dt);
+    filtered_pre_pre_error_roll = filtered_pre_error_roll;
+    filtered_pre_error_roll = filtered_error_roll;
+    if (fabs(pid_output) > ACC_upper_limit)
+    {
+      pid_output = pid_output > 0 ? ACC_upper_limit : -ACC_upper_limit;
+    }
+    return pid_output;
+}
+#endif
 
 float pid_pitch(float pv)
 {
     error_pitch = setpoint_pitch - pv;
-    pid_output = kp_pitch * error_pitch + kd_pitch * (error_pitch*2/3 - pre_error_pitch + pre_pre_error_pitch/3) / dt;
+    pid_output = kp_pitch * error_pitch + kd_pitch * (error_pitch - pre_pre_error_pitch) / (2 * dt);
     pre_pre_error_pitch = pre_error_pitch;
     pre_error_pitch = error_pitch;
     if (fabs(pid_output) > ACC_upper_limit)
@@ -176,7 +209,7 @@ float pid_pitch(float pv)
 float pid_roll(float pv)
 {
     error_roll = setpoint_roll - pv;
-    pid_output = kp_roll * error_roll + kd_roll * (error_roll*2/3 - pre_error_roll + pre_pre_error_roll/3) / dt;
+    pid_output = kp_roll * error_roll + kd_roll * (error_roll - pre_pre_error_roll) / (2 * dt);
     pre_pre_error_roll = pre_error_roll;
     pre_error_roll = error_roll;
     if (fabs(pid_output) > ACC_upper_limit)
@@ -304,7 +337,7 @@ void set_delay_roll(float acc)
 
 
 void setup() {
-  //Serial.begin(115200);
+  Serial.begin(115200);
   Wire.begin();
   TWBR = ((F_CPU / 400000L) - 16) / 2; // Set I2C frequency to 400kHz
 
@@ -348,25 +381,26 @@ void setup() {
   compAngleY = pitch;
 
   timer = micros();
-  
+
+#ifdef USE_ROS
   //initialize ros
   nh.initNode();
   nh.advertise(imu_pitch_pub);
   nh.advertise(imu_roll_pub);
   nh.advertise(acc_pitch_pub);
   nh.advertise(acc_roll_pub);
-  nh.advertise(gyro_pitch_pub);
-  nh.advertise(gyro_roll_pub);
-  nh.advertise(acc_x_pub);
-  nh.advertise(acc_y_pub);
-  nh.advertise(acc_z_pub);
-  
-#ifdef USE_LOWPASS_FILTER
-  nh.advertise(filter_imu_pitch_pub);
-  nh.advertise(filter_imu_roll_pub);
 #endif
 
-
+#ifdef USE_KALMAN_CC
+kalman_cc_pitch = new KalmanFilter(kalman_cc_P, kalman_cc_Q, kalman_cc_R);
+kalman_cc_roll = new KalmanFilter(kalman_cc_P, kalman_cc_Q, kalman_cc_R);
+kalman_cc_pitch->init();
+kalman_cc_roll->init();
+#ifdef USE_ROS
+ nh.advertise(kalman_cc_imu_pitch_pub);
+ nh.advertise(kalman_cc_imu_roll_pub);
+#endif
+#endif
   
   //initialize motors
   pinMode(30, OUTPUT);
@@ -410,7 +444,7 @@ void loop() {
   gyroY = (i2cData[10] << 8) | i2cData[11];
   gyroZ = (i2cData[12] << 8) | i2cData[13];
 
-  double dt = (double)(micros() - timer) / 1000000; // Calculate delta time
+  dt = (double)(micros() - timer) / 1000000; // Calculate delta time
   timer = micros();
 
   double gyroXrate = gyroX / 131.0; // Convert to deg/s
@@ -484,9 +518,9 @@ void loop() {
   Serial.print("\t");
 #endif
 
-  delt_t = millis() - count;
-  if(delt_t > 100)
-  {
+//  delt_t = millis() - count;
+//  if(delt_t > 100)
+//  {
     
 //    Serial.print("Roll: ");
 //    //Serial.print(roll); Serial.print(" ");
@@ -508,67 +542,56 @@ void loop() {
 //    Serial.println(" Hz");
     
     
-    count = millis();
-  }
+//    count = millis();
+//  }
   
-  Now = micros();
-  deltat = ((Now - lastUpdate) / 1000000.0f);
-  lastUpdate = Now;
+//  Now = micros();
+//  deltat = ((Now - lastUpdate) / 1000000.0f);
+//  lastUpdate = Now;
 
-  sum += deltat;
-  sumCount++;
+//  sum += deltat;
+//  sumCount++;
+
+
+#ifdef USE_KALMAN_CC
   
-  #ifdef USE_LOWPASS_FILTER
-  lowpassFilter_roll.input(kalAngleX);
-  filter_imu_roll = lowpassFilter_roll.output();
+  kalman_cc_pitch->update(kalAngleY);
+  kalman_cc_pitch_value = kalman_cc_pitch->state();
   
-  lowpassFilter_pitch.input(kalAngleY);
-  filter_imu_pitch = lowpassFilter_pitch.output();
+  kalman_cc_roll->update(kalAngleX);
+  kalman_cc_roll_value = kalman_cc_roll->state();
   
-  filter_imu_roll_msg.data = filter_imu_roll;
-  filter_imu_roll_pub.publish(&filter_imu_roll_msg);
+  acc_pitch = pid_pitch(kalAngleY, kalman_cc_pitch_value);
+  acc_roll = pid_roll(-kalAngleX, -kalman_cc_roll_value);
   
-  filter_imu_pitch_msg.data = filter_imu_pitch;
-  filter_imu_pitch_pub.publish(&filter_imu_pitch_msg);
+  #ifdef USE_ROS
+  kalman_cc_imu_pitch_msg.data = kalman_cc_pitch_value;
+  kalman_cc_imu_pitch_pub.publish(&kalman_cc_imu_pitch_msg);
   
-  acc_pitch = pid_pitch(filter_imu_pitch * 180 / M_PI);
-  acc_roll = pid_roll(filter_imu_roll * 180 / M_PI);
+  kalman_cc_imu_roll_msg.data = kalman_cc_roll_value;
+  kalman_cc_imu_roll_pub.publish(&kalman_cc_imu_roll_msg);
+  
+  #endif
 #else
-  acc_pitch = pid_pitch(kalAngleY * 180 / M_PI);
-  acc_roll = pid_roll(kalAngleX * 180 / M_PI);
+  acc_pitch = pid_pitch(kalAngleY);
+  acc_roll = pid_roll(- kalAngleX);
 #endif
   
   set_delay_pitch(acc_pitch);
   set_delay_roll(acc_roll);
 
+#ifdef USE_ROS
   imu_pitch_msg.data = kalAngleY;
   imu_roll_msg.data = kalAngleX;
   imu_pitch_pub.publish(&imu_pitch_msg);
   imu_roll_pub.publish(&imu_roll_msg);
   
-  acc_pitch_msg.data = acc_pitch/100;
-  acc_roll_msg.data = acc_roll/100;
+  acc_pitch_msg.data = acc_pitch/1000;
+  acc_roll_msg.data = acc_roll/1000;
   acc_pitch_pub.publish(&acc_pitch_msg);
   acc_roll_pub.publish(&acc_roll_msg);
   
-  gyro_pitch_msg.data = gyroX;
-  gyro_roll_msg.data = gyroY;
-  gyro_pitch_pub.publish(&gyro_pitch_msg);
-  gyro_roll_pub.publish(&gyro_roll_msg);
-  
-
-
-
-  acc_x_msg.data = accX;
-  acc_x_pub.publish(&acc_x_msg);
-  
-  acc_y_msg.data = accY;
-  acc_y_pub.publish(&acc_y_msg);
-  
-  acc_z_msg.data = accZ;
-  acc_z_pub.publish(&acc_z_msg);
-  
-  
-  
   nh.spinOnce();
+  
+#endif
 }
