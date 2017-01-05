@@ -35,9 +35,9 @@
 #define RESTRICT_PITCH // Comment out to restrict roll to ±90deg instead - please read: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf
 
 #define INFINITE (unsigned long)1000000
-#define P 15.5f
-#define D 18.f
-#define V_upper_limit 1000.0f
+#define P 5.f
+#define D 10.f
+#define V_upper_limit 300.0f
 //#define ACC_upper_limit 40000.0f
 #define ACC_upper_limit 400000.0f
 
@@ -140,9 +140,9 @@ float setpoint_roll = 0.0;
 #ifdef USE_KALMAN_CC
 KalmanFilter * kalman_cc_pitch;
 KalmanFilter * kalman_cc_roll;
-float kalman_cc_P = 10;
+float kalman_cc_P = 1;
 float kalman_cc_Q = 0.1;//the bigger the tighter
-float kalman_cc_R = 1;
+float kalman_cc_R = 2;//the smaller the tighter
 
 float kalman_cc_pitch_value = 0.0;
 float kalman_cc_roll_value = 0.0;
@@ -362,9 +362,6 @@ void setup() {
   accY = (i2cData[2] << 8) | i2cData[3];
   accZ = (i2cData[4] << 8) | i2cData[5];
 
-  // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
-  // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
-  // It is then converted from radians to degrees
 #ifdef RESTRICT_PITCH // Eq. 25 and 26
   double roll  = atan2(accY, accZ) * RAD_TO_DEG;
   double pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
@@ -450,9 +447,6 @@ void loop() {
   double gyroXrate = gyroX / 131.0; // Convert to deg/s
   double gyroYrate = gyroY / 131.0; // Convert to deg/s
 
-  // Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
-  // atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
-  // It is then converted from radians to degrees
 #ifdef RESTRICT_PITCH // Eq. 25 and 26
   double roll  = atan2(accY, accZ) * RAD_TO_DEG;
   double pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
@@ -505,54 +499,6 @@ void loop() {
   if (gyroYangle < -180 || gyroYangle > 180)
     gyroYangle = kalAngleY;
 
-  /* Print Data */
-#if 0 // Set to 1 to activate
-  Serial.print(accX); Serial.print("\t");
-  Serial.print(accY); Serial.print("\t");
-  Serial.print(accZ); Serial.print("\t");
-
-  Serial.print(gyroX); Serial.print("\t");
-  Serial.print(gyroY); Serial.print("\t");
-  Serial.print(gyroZ); Serial.print("\t");
-
-  Serial.print("\t");
-#endif
-
-//  delt_t = millis() - count;
-//  if(delt_t > 100)
-//  {
-    
-//    Serial.print("Roll: ");
-//    //Serial.print(roll); Serial.print(" ");
-//    //Serial.print("gyro: "); Serial.print(gyroXangle); Serial.print(" ");
-//    //Serial.print("comp: ");Serial.print(compAngleX); Serial.print(" ");
-//    Serial.print("kal: ");Serial.print(kalAngleX); Serial.print(" ");
-//  
-//    Serial.print(" ");
-//  
-//    Serial.print("Pitch: ");
-//    //Serial.print(pitch); Serial.print(" ");
-//    //Serial.print("gyro: ");Serial.print(gyroYangle); Serial.print(" ");
-//    //Serial.print("comp: ");Serial.print(compAngleY); Serial.print(" ");
-//    Serial.print("kal: ");Serial.print(kalAngleY); Serial.print(" ");
-  
-    
-//    Serial.print("rate = ");
-//   Serial.print((float)sumCount/sum, 2);
-//    Serial.println(" Hz");
-    
-    
-//    count = millis();
-//  }
-  
-//  Now = micros();
-//  deltat = ((Now - lastUpdate) / 1000000.0f);
-//  lastUpdate = Now;
-
-//  sum += deltat;
-//  sumCount++;
-
-
 #ifdef USE_KALMAN_CC
   
   kalman_cc_pitch->update(kalAngleY);
@@ -574,7 +520,7 @@ void loop() {
   #endif
 #else
   acc_pitch = pid_pitch(kalAngleY);
-  acc_roll = pid_roll(- kalAngleX);
+  acc_roll = pid_roll(-kalAngleX);
 #endif
   
   set_delay_pitch(acc_pitch);
@@ -586,8 +532,8 @@ void loop() {
   imu_pitch_pub.publish(&imu_pitch_msg);
   imu_roll_pub.publish(&imu_roll_msg);
   
-  acc_pitch_msg.data = acc_pitch/1000;
-  acc_roll_msg.data = acc_roll/1000;
+  acc_pitch_msg.data = acc_pitch/100;
+  acc_roll_msg.data = acc_roll/100;
   acc_pitch_pub.publish(&acc_pitch_msg);
   acc_roll_pub.publish(&acc_roll_msg);
   
